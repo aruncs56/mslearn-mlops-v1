@@ -2,6 +2,7 @@ from azure.identity import DefaultAzureCredential
 from azure.ai.ml import MLClient
 from azure.ai.ml.entities import ManagedOnlineEndpoint, ManagedOnlineDeployment, Model
 from azure.ai.ml.constants import AssetTypes
+from azure.core.exceptions import HttpResponseError
 
 import argparse
 import datetime
@@ -32,16 +33,33 @@ def get_ml_client(subscription_id: str, resource_group: str, workspace: str) -> 
 def ensure_endpoint(ml_client: MLClient, endpoint_name: str) -> ManagedOnlineEndpoint:
     try:
         endpoint = ml_client.online_endpoints.get(name=endpoint_name)
-        print(f"Endpoint '{endpoint_name}' already exists. Using existing endpoint.")
+        print(f"Endpoint '{endpoint_name}' already exists in workspace. Using existing endpoint.")
         return endpoint
-    except Exception as e:
-        print(f"Endpoint '{endpoint_name}' does not exist. Creating new endpoint...")
-        endpoint = ManagedOnlineEndpoint(
-            name=endpoint_name,
-            description="Online endpoint for MLflow diabetes model",
-            auth_mode="key",
-        )
-        return ml_client.begin_create_or_update(endpoint).result()
+    except Exception:
+        # Endpoint doesn't exist in this workspace, try to create it
+        try:
+            print(f"Creating new endpoint: '{endpoint_name}'")
+            endpoint = ManagedOnlineEndpoint(
+                name=endpoint_name,
+                description="Online endpoint for MLflow diabetes model",
+                auth_mode="key",
+            )
+            return ml_client.begin_create_or_update(endpoint).result()
+        except HttpResponseError as e:
+            # If the name is already taken in the region, generate a unique name
+            if "already exists an endpoint with this name in the region" in str(e):
+                print(f"Endpoint name '{endpoint_name}' is already taken in the region. Generating unique name...")
+                unique_suffix = datetime.datetime.now().strftime("%m%d%H%M%S")
+                unique_name = f"{endpoint_name}-{unique_suffix}"
+                print(f"Creating endpoint with unique name: '{unique_name}'")
+                endpoint = ManagedOnlineEndpoint(
+                    name=unique_name,
+                    description="Online endpoint for MLflow diabetes model",
+                    auth_mode="key",
+                )
+                return ml_client.begin_create_or_update(endpoint).result()
+            else:
+                raise
 
 
 def create_or_update_deployment(
